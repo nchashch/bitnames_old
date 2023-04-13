@@ -1,0 +1,10 @@
+[workspace]
+
+members = [
+"types",
+"state",
+"api",
+"node",
+"cli",
+"wallet",
+]

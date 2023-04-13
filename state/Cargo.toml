@@ -1,0 +1,12 @@
+[package]
+name = "bitnames_state"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+thiserror = "1.0.40"
+heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4" }
+
+bitnames_types = { path = "../types" }
