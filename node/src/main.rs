@@ -3,10 +3,8 @@ mod authorization;
 mod bmm_actor;
 mod mainchain_client;
 mod mempool;
-// mod nameserver;
 mod bmm;
 mod drivechain;
-mod random;
 mod state;
 
 use anyhow::Result;

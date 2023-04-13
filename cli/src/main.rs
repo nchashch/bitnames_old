@@ -1,6 +1,5 @@
 mod args;
 mod authorization;
-mod random;
 
 use anyhow::Result;
 use args::{Bmm, Cli, Command};
