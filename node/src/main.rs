@@ -1,10 +1,10 @@
 mod amount;
 mod authorization;
+mod bmm;
 mod bmm_actor;
+mod drivechain;
 mod mainchain_client;
 mod mempool;
-mod bmm;
-mod drivechain;
 mod state;
 
 use anyhow::Result;
@@ -31,7 +31,7 @@ impl BitNamesNode {
         let env = new_env();
         let state = state::spawn_bitnames_state(env.clone()).await?;
         let mempool = mempool::spawn_mem_pool().await;
-        let bmm = bmm_actor::spawn_bmm(env).await?;
+        let bmm = bmm_actor::spawn_bmm().await?;
 
         Ok(BitNamesNode {
             state,
@@ -92,12 +92,7 @@ impl BitNames for BitNamesNode {
         let body = request.body;
         let body: Body = bincode::deserialize(&body).unwrap();
         let txids: Vec<_> = body.transactions.iter().map(Transaction::txid).collect();
-        let start = self
-            .state
-            .get_best_header()
-            .await
-            .map(|(_, header)| header.prev_main_block_hash)
-            .unwrap();
+        let start = self.state.get_last_deposit_block_hash().await.unwrap();
         let end = header.prev_main_block_hash;
         let two_way_peg_data = self.bmm.get_two_way_peg_data(end, start).await;
         self.bmm.verify_bmm(header.clone()).await;
@@ -134,12 +129,7 @@ impl BitNames for BitNamesNode {
     ) -> Result<Response<ConfirmBmmResponse>, Status> {
         let connected = match self.bmm.confirm_bmm().await {
             Some((header, body)) => {
-                let start = self
-                    .state
-                    .get_best_header()
-                    .await
-                    .map(|(_, header)| header.prev_main_block_hash)
-                    .unwrap();
+                let start = self.state.get_last_deposit_block_hash().await.unwrap();
                 let end = header.prev_main_block_hash;
                 let two_way_peg_data = self.bmm.get_two_way_peg_data(end, start).await;
                 dbg!(&header, &two_way_peg_data, &body);
@@ -178,7 +168,7 @@ fn new_env() -> heed::Env {
     std::fs::create_dir_all(&env_path).unwrap();
     let env = heed::EnvOpenOptions::new()
         .map_size(10 * 1024 * 1024) // 10MB
-        .max_dbs(BitNamesState::NUM_DBS + bmm::Bmm::NUM_DBS)
+        .max_dbs(BitNamesState::NUM_DBS)
         .open(env_path)
         .unwrap();
     env

@@ -49,6 +49,8 @@ impl Header {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct TwoWayPegData {
     pub deposits: HashMap<OutPoint, Output>,
+    pub deposit_block_hash: Option<bitcoin::BlockHash>,
+
     pub pending_bundles: HashMap<bitcoin::Txid, Vec<OutPoint>>,
     pub spent_bundles: Vec<bitcoin::Txid>,
     pub failed_bundles: Vec<bitcoin::Txid>,

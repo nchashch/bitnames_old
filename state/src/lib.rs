@@ -22,7 +22,9 @@ pub struct BitNamesState {
     //
     pub withdrawal_bundles: Database<SerdeBincode<bitcoin::Txid>, SerdeBincode<Vec<OutPoint>>>,
     pub pending_withdrawals: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-    // pub last_deposit_block: Database<OwnedType<u32>, SerdeBincode<bitcoin::BlockHash>>,
+
+    pub last_deposit_block: Database<OwnedType<u32>, SerdeBincode<bitcoin::BlockHash>>,
+
     pub utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
 
     // Should headers be a part of the state?
@@ -30,7 +32,7 @@ pub struct BitNamesState {
 }
 
 impl BitNamesState {
-    pub const NUM_DBS: u32 = 9;
+    pub const NUM_DBS: u32 = 10;
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
         let key_to_value = env.create_database(Some("key_to_value"))?;
@@ -40,6 +42,9 @@ impl BitNamesState {
         let commitment_to_key = env.create_database(Some("commitment_to_key"))?;
         let pending_withdrawals = env.create_database(Some("pending_withdrawals"))?;
         let withdrawal_bundles = env.create_database(Some("withdrawal_bundles"))?;
+
+        let last_deposit_block = env.create_database(Some("last_deposit_block"))?;
+
         let utxos = env.create_database(Some("utxos"))?;
 
         let headers: Database<OwnedType<u32>, SerdeBincode<Header>> =
@@ -61,8 +66,9 @@ impl BitNamesState {
             commitment_to_key,
             pending_withdrawals,
             withdrawal_bundles,
-            headers,
+            last_deposit_block,
             utxos,
+            headers,
         })
     }
 
@@ -260,6 +266,13 @@ impl BitNamesState {
         todo!();
     }
 
+    pub fn get_last_deposit_block_hash(
+        &self,
+        rtxn: &RoTxn,
+    ) -> Result<Option<bitcoin::BlockHash>, Error> {
+        Ok(self.last_deposit_block.get(&rtxn, &0)?)
+    }
+
     pub fn connect_block(
         &self,
         wtxn: &mut RwTxn,
@@ -272,6 +285,9 @@ impl BitNamesState {
         self.headers
             .append(wtxn, &(block_height + 1), &header.clone())?;
 
+        if let Some(deposit_block_hash) = two_way_peg_data.deposit_block_hash {
+            self.last_deposit_block.put(wtxn, &0, &deposit_block_hash)?;
+        }
         // Connect deposits.
         for (outpoint, deposit) in &two_way_peg_data.deposits {
             self.utxos.put(wtxn, outpoint, deposit)?;

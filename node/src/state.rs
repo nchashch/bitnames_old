@@ -5,6 +5,9 @@ use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 pub enum BitNamesStateMessage {
+    GetLastDepositBlockHash {
+        respond_to: oneshot::Sender<Result<Option<bitcoin::BlockHash>, bitnames_state::Error>>,
+    },
     GetBestHeader {
         respond_to: oneshot::Sender<Result<(u32, Header), bitnames_state::Error>>,
     },
@@ -79,6 +82,11 @@ impl BitNamesStateActor {
                 let result = self.state.get_utxos_by_addresses(&rtxn, &addresses);
                 respond_to.send(result).unwrap();
             }
+            BitNamesStateMessage::GetLastDepositBlockHash { respond_to } => {
+                let rtxn = self.env.read_txn().unwrap();
+                let result = self.state.get_last_deposit_block_hash(&rtxn);
+                respond_to.send(result).unwrap();
+            }
         }
     }
 }
@@ -133,6 +141,17 @@ impl BitNamesStateHandle {
         let (respond_to, receiver) = oneshot::channel();
         self.sender
             .send(BitNamesStateMessage::GetBestHeader { respond_to })
+            .await
+            .unwrap();
+        receiver.await.unwrap()
+    }
+
+    pub async fn get_last_deposit_block_hash(
+        &self,
+    ) -> Result<Option<bitcoin::BlockHash>, bitnames_state::Error> {
+        let (respond_to, receiver) = oneshot::channel();
+        self.sender
+            .send(BitNamesStateMessage::GetLastDepositBlockHash { respond_to })
             .await
             .unwrap();
         receiver.await.unwrap()

@@ -59,7 +59,7 @@ impl BmmHandle {
     pub async fn get_two_way_peg_data(
         &self,
         end: bitcoin::BlockHash,
-        start: bitcoin::BlockHash,
+        start: Option<bitcoin::BlockHash>,
     ) -> TwoWayPegData {
         let (respond_to, receiver) = oneshot::channel();
         self.sender
@@ -78,7 +78,7 @@ impl BmmHandle {
 pub enum BmmMessage {
     GetTwoWayPegData {
         end: bitcoin::BlockHash,
-        start: bitcoin::BlockHash,
+        start: Option<bitcoin::BlockHash>,
         respond_to: oneshot::Sender<TwoWayPegData>,
     },
     GetMainchainTip {
@@ -98,9 +98,9 @@ pub enum BmmMessage {
     },
 }
 
-pub async fn spawn_bmm(env: heed::Env) -> Result<BmmHandle> {
+pub async fn spawn_bmm() -> Result<BmmHandle> {
     let (sender, receiver) = mpsc::channel(1024);
-    let bmm = BmmActor::new(env, receiver)?;
+    let bmm = BmmActor::new(receiver)?;
     tokio::task::spawn(run_bmm_actor(bmm));
     Ok(BmmHandle { sender })
 }
@@ -138,18 +138,20 @@ impl BmmActor {
                 start,
                 respond_to,
             } => {
-                let deposits = self.bmm.get_deposit_outputs(end).await.unwrap();
+                let (deposits, last_block_hash) =
+                    self.bmm.get_deposit_outputs(end, start).await.unwrap();
                 let two_way_peg_data = TwoWayPegData {
                     deposits,
+                    deposit_block_hash: last_block_hash,
                     ..TwoWayPegData::default()
                 };
                 respond_to.send(two_way_peg_data).unwrap();
             }
         }
     }
-    fn new(env: heed::Env, receiver: mpsc::Receiver<BmmMessage>) -> Result<Self> {
+    fn new(receiver: mpsc::Receiver<BmmMessage>) -> Result<Self> {
         Ok(BmmActor {
-            bmm: Bmm::new(env)?,
+            bmm: Bmm::new()?,
             receiver,
         })
     }

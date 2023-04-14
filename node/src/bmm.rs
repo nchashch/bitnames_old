@@ -3,8 +3,6 @@ use anyhow::Result;
 use bitcoin::util::psbt::serialize::Deserialize;
 use bitnames_state::{Address, Body, Content, Header, OutPoint, Output};
 use bitnames_types::{bitcoin, bitcoin::hashes::Hash as _};
-use heed::types::*;
-use heed::{Database, RoTxn, RwTxn};
 use jsonrpsee::http_client::{HeaderMap, HttpClient, HttpClientBuilder};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -13,14 +11,10 @@ use std::str::FromStr;
 pub struct Bmm {
     client: HttpClient,
     block: Option<(Header, Body)>,
-    last_block: Database<OwnedType<u32>, SerdeBincode<bitcoin::BlockHash>>,
-    env: heed::Env,
 }
 
 impl Bmm {
-    pub const NUM_DBS: u32 = 1;
-
-    pub fn new(env: heed::Env) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let mut headers = HeaderMap::new();
         let auth = format!("{}:{}", "user", "password");
         let header_value = format!("Basic {}", base64::encode(auth)).parse()?;
@@ -29,13 +23,9 @@ impl Bmm {
             .set_headers(headers.clone())
             .build("http://127.0.0.1:18443")?;
 
-        let last_block = env.create_database(Some("last_block"))?;
-
         Ok(Self {
-            env,
             client,
             block: None,
-            last_block,
         })
     }
 
@@ -46,48 +36,41 @@ impl Bmm {
     pub async fn get_deposit_outputs(
         &mut self,
         end: bitcoin::BlockHash,
-    ) -> Result<HashMap<OutPoint, Output>> {
-        let outputs = {
-            let start = {
-                let rtxn = self.env.read_txn()?;
-                self.last_block.get(&rtxn, &0)?
-            };
-            let deposits = self
-                .client
-                .listsidechaindepositsbyblock(0, Some(end), start)
-                .await?;
-            let mut wtxn = self.env.write_txn()?;
-            let mut last_total = 0;
-            let mut outputs = HashMap::new();
-            dbg!(last_total);
-            for deposit in &deposits {
-                let transaction = hex::decode(&deposit.txhex)?;
-                let transaction = bitcoin::Transaction::deserialize(transaction.as_slice())?;
-                if let Some(start) = start {
-                    if deposit.hashblock == start {
-                        last_total = transaction.output[deposit.nburnindex].value;
-                        continue;
-                    }
+        start: Option<bitcoin::BlockHash>,
+    ) -> Result<(HashMap<OutPoint, Output>, Option<bitcoin::BlockHash>)> {
+        let deposits = self
+            .client
+            .listsidechaindepositsbyblock(0, Some(end), start)
+            .await?;
+        let mut last_block_hash = None;
+        let mut last_total = 0;
+        let mut outputs = HashMap::new();
+        dbg!(last_total);
+        for deposit in &deposits {
+            let transaction = hex::decode(&deposit.txhex)?;
+            let transaction = bitcoin::Transaction::deserialize(transaction.as_slice())?;
+            if let Some(start) = start {
+                if deposit.hashblock == start {
+                    last_total = transaction.output[deposit.nburnindex].value;
+                    continue;
                 }
-                let total = transaction.output[deposit.nburnindex].value;
-                let value = total - last_total;
-                let address: Address = deposit.strdest.parse()?;
-                let output = Output {
-                    address,
-                    content: Content::Value(value),
-                };
-                let outpoint = OutPoint::Deposit(bitcoin::OutPoint {
-                    txid: transaction.txid(),
-                    vout: deposit.nburnindex as u32,
-                });
-                outputs.insert(outpoint, output);
-                last_total = total;
-                self.last_block.put(&mut wtxn, &0, &deposit.hashblock)?;
             }
-            wtxn.commit()?;
-            outputs
-        };
-        Ok(outputs)
+            let total = transaction.output[deposit.nburnindex].value;
+            let value = total - last_total;
+            let address: Address = deposit.strdest.parse()?;
+            let output = Output {
+                address,
+                content: Content::Value(value),
+            };
+            let outpoint = OutPoint::Deposit(bitcoin::OutPoint {
+                txid: transaction.txid(),
+                vout: deposit.nburnindex as u32,
+            });
+            outputs.insert(outpoint, output);
+            last_total = total;
+            last_block_hash = Some(deposit.hashblock);
+        }
+        Ok((outputs, last_block_hash))
     }
 
     pub async fn verify_bmm(&self, header: &Header) -> Result<()> {
