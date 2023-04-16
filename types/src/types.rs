@@ -46,14 +46,23 @@ impl Header {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WithdrawalBundleStatus {
+    Failed,
+    Confirmed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithdrawalBundle {
+    pub spent_utxos: HashMap<OutPoint, Output>,
+    pub transaction: bitcoin::Transaction,
+}
+
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct TwoWayPegData {
     pub deposits: HashMap<OutPoint, Output>,
     pub deposit_block_hash: Option<bitcoin::BlockHash>,
-
-    pub pending_bundles: HashMap<bitcoin::Txid, Vec<OutPoint>>,
-    pub spent_bundles: Vec<bitcoin::Txid>,
-    pub failed_bundles: Vec<bitcoin::Txid>,
+    pub bundle_statuses: HashMap<bitcoin::Txid, WithdrawalBundleStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,5 +152,36 @@ impl TransactionBuilder {
             inputs: self.inputs,
             outputs: self.outputs,
         }
+    }
+}
+
+use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
+
+#[derive(Eq, PartialEq, Clone, Debug)]
+pub struct AggregatedWithdrawal {
+    pub spent_utxos: HashMap<OutPoint, Output>,
+    pub main_address: bitcoin::Address,
+    pub value: u64,
+    pub main_fee: u64,
+}
+
+impl Ord for AggregatedWithdrawal {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self == other {
+            Ordering::Equal
+        } else if self.main_fee > other.main_fee
+            || self.value > other.value
+            || self.main_address > other.main_address
+        {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        }
+    }
+}
+
+impl PartialOrd for AggregatedWithdrawal {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }

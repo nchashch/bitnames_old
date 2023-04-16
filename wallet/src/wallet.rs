@@ -2,8 +2,8 @@ use crate::signer::Signer;
 use crate::state::State;
 use bitnames_api::bit_names_client::BitNamesClient;
 use bitnames_api::*;
+use bitnames_types::sdk_types::GetValue as _;
 use bitnames_types::*;
-use bitnames_types::{sdk_types::GetValue as _, *};
 use heed::{RoTxn, RwTxn};
 use sdk_authorization_ed25519_dalek::Authorization;
 

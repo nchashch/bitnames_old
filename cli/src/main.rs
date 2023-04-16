@@ -1,5 +1,4 @@
 mod args;
-mod authorization;
 
 use anyhow::Result;
 use args::{Bmm, Cli, Command};

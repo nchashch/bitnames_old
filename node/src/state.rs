@@ -24,6 +24,9 @@ pub enum BitNamesStateMessage {
         addresses: Vec<Address>,
         respond_to: oneshot::Sender<Result<Vec<(OutPoint, Output)>, bitnames_state::Error>>,
     },
+    GetPendingWithdrawalBundle {
+        respond_to: oneshot::Sender<Result<Option<WithdrawalBundle>, bitnames_state::Error>>,
+    },
 }
 
 pub struct BitNamesStateActor {
@@ -85,6 +88,11 @@ impl BitNamesStateActor {
             BitNamesStateMessage::GetLastDepositBlockHash { respond_to } => {
                 let rtxn = self.env.read_txn().unwrap();
                 let result = self.state.get_last_deposit_block_hash(&rtxn);
+                respond_to.send(result).unwrap();
+            }
+            BitNamesStateMessage::GetPendingWithdrawalBundle { respond_to } => {
+                let rtxn = self.env.read_txn().unwrap();
+                let result = self.state.get_pending_withdrawal_bundle(&rtxn);
                 respond_to.send(result).unwrap();
             }
         }
@@ -152,6 +160,17 @@ impl BitNamesStateHandle {
         let (respond_to, receiver) = oneshot::channel();
         self.sender
             .send(BitNamesStateMessage::GetLastDepositBlockHash { respond_to })
+            .await
+            .unwrap();
+        receiver.await.unwrap()
+    }
+
+    pub async fn get_pending_withdrawal_bundle(
+        &self,
+    ) -> Result<Option<WithdrawalBundle>, bitnames_state::Error> {
+        let (respond_to, receiver) = oneshot::channel();
+        self.sender
+            .send(BitNamesStateMessage::GetPendingWithdrawalBundle { respond_to })
             .await
             .unwrap();
         receiver.await.unwrap()

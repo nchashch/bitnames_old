@@ -72,6 +72,13 @@ impl BmmHandle {
             .unwrap();
         receiver.await.unwrap()
     }
+
+    pub async fn broadcast_withdrawal_bundle(
+        &self,
+        transaction: &bitcoin::Transaction,
+    ) -> Result<()> {
+        todo!();
+    }
 }
 
 #[derive(Debug)]
@@ -138,12 +145,13 @@ impl BmmActor {
                 start,
                 respond_to,
             } => {
-                let (deposits, last_block_hash) =
+                let (deposits, deposit_block_hash) =
                     self.bmm.get_deposit_outputs(end, start).await.unwrap();
+                let bundle_statuses = self.bmm.get_withdrawal_bundle_statuses().await.unwrap();
                 let two_way_peg_data = TwoWayPegData {
                     deposits,
-                    deposit_block_hash: last_block_hash,
-                    ..TwoWayPegData::default()
+                    deposit_block_hash,
+                    bundle_statuses,
                 };
                 respond_to.send(two_way_peg_data).unwrap();
             }

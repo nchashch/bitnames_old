@@ -1,8 +1,6 @@
 mod amount;
-mod authorization;
 mod bmm;
 mod bmm_actor;
-mod drivechain;
 mod mainchain_client;
 mod mempool;
 mod state;
@@ -100,6 +98,12 @@ impl BitNames for BitNamesNode {
             .connect_block(header, body, two_way_peg_data)
             .await;
         self.mempool.remove_transactions(txids).await;
+        if let Some(bundle) = self.state.get_pending_withdrawal_bundle().await.unwrap() {
+            self.bmm
+                .broadcast_withdrawal_bundle(&bundle.transaction)
+                .await
+                .unwrap();
+        }
         Ok(Response::new(SubmitBlockResponse {}))
     }
 
@@ -141,6 +145,12 @@ impl BitNames for BitNamesNode {
                 self.state
                     .connect_block(header, body, two_way_peg_data)
                     .await;
+                if let Some(bundle) = self.state.get_pending_withdrawal_bundle().await.unwrap() {
+                    self.bmm
+                        .broadcast_withdrawal_bundle(&bundle.transaction)
+                        .await
+                        .unwrap();
+                }
                 self.mempool.remove_transactions(txids).await;
                 true
             }

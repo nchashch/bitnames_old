@@ -2,7 +2,7 @@ use crate::mainchain_client::MainClient;
 use anyhow::Result;
 use bitcoin::util::psbt::serialize::Deserialize;
 use bitnames_state::{Address, Body, Content, Header, OutPoint, Output};
-use bitnames_types::{bitcoin, bitcoin::hashes::Hash as _};
+use bitnames_types::{bitcoin, bitcoin::hashes::Hash as _, WithdrawalBundleStatus};
 use jsonrpsee::http_client::{HeaderMap, HttpClient, HttpClientBuilder};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -31,6 +31,12 @@ impl Bmm {
 
     pub async fn get_mainchain_tip(&self) -> Result<bitcoin::BlockHash> {
         Ok(self.client.getbestblockhash().await?)
+    }
+
+    pub async fn get_withdrawal_bundle_statuses(
+        &mut self,
+    ) -> Result<HashMap<bitcoin::Txid, WithdrawalBundleStatus>> {
+        todo!();
     }
 
     pub async fn get_deposit_outputs(

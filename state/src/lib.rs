@@ -1,6 +1,6 @@
 use sdk_authorization_ed25519_dalek::verify_authorizations;
 use sdk_types::{validate_body, validate_transaction};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub use bitnames_types::*;
 use heed::types::*;
@@ -15,24 +15,25 @@ pub struct BitNamesState {
     pub key_to_commitment: Database<SerdeBincode<Key>, SerdeBincode<Commitment>>,
     pub commitment_to_key: Database<SerdeBincode<Commitment>, SerdeBincode<Key>>,
 
-    // Should bundle include a commitment to merkle root of withdrawal outpoints
-    // it spends? Yes. Without it bundles can be ambiguous.
+    // TODO: Include commitment to spent inputs in withdrawal bundle, without it
+    // there is ambiguity
     //
-    // Should withdrawal bundles be included in the state?
+    // TODO: Get rid of redundant data for withdrawal bundles
     //
-    pub withdrawal_bundles: Database<SerdeBincode<bitcoin::Txid>, SerdeBincode<Vec<OutPoint>>>,
-    pub pending_withdrawals: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-
+    // TODO: Lock withdrawals independently of mainchain, make locking of
+    // withdrawals deterministic.
+    pub last_withdrawal_bundle: Database<OwnedType<u32>, SerdeBincode<WithdrawalBundle>>,
+    pub last_withdrawal_bundle_failure_height: Database<OwnedType<u32>, OwnedType<u32>>,
     pub last_deposit_block: Database<OwnedType<u32>, SerdeBincode<bitcoin::BlockHash>>,
 
     pub utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-
     // Should headers be a part of the state?
     pub headers: Database<OwnedType<u32>, SerdeBincode<Header>>,
 }
 
 impl BitNamesState {
     pub const NUM_DBS: u32 = 10;
+    pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 100;
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
         let key_to_value = env.create_database(Some("key_to_value"))?;
@@ -40,9 +41,11 @@ impl BitNamesState {
         let commitment_to_outpoint = env.create_database(Some("commitment_to_outpoint"))?;
         let key_to_commitment = env.create_database(Some("key_to_commitment"))?;
         let commitment_to_key = env.create_database(Some("commitment_to_key"))?;
-        let pending_withdrawals = env.create_database(Some("pending_withdrawals"))?;
-        let withdrawal_bundles = env.create_database(Some("withdrawal_bundles"))?;
 
+        let last_withdrawal_bundle = env.create_database(Some("last_withdrawal_bundle"))?;
+
+        let last_withdrawal_bundle_failure_height =
+            env.create_database(Some("last_withdrawal_bundle_failure_height"))?;
         let last_deposit_block = env.create_database(Some("last_deposit_block"))?;
 
         let utxos = env.create_database(Some("utxos"))?;
@@ -64,8 +67,8 @@ impl BitNamesState {
             commitment_to_outpoint,
             key_to_commitment,
             commitment_to_key,
-            pending_withdrawals,
-            withdrawal_bundles,
+            last_withdrawal_bundle,
+            last_withdrawal_bundle_failure_height,
             last_deposit_block,
             utxos,
             headers,
@@ -108,6 +111,137 @@ impl BitNamesState {
             }
         }
         Ok(utxos)
+    }
+
+    pub fn get_pending_withdrawal_bundle(
+        &self,
+        txn: &RoTxn,
+    ) -> Result<Option<WithdrawalBundle>, Error> {
+        Ok(self.last_withdrawal_bundle.get(txn, &0)?)
+    }
+
+    fn collect_withdrawal_bundle(&self, txn: &RoTxn) -> Result<Option<WithdrawalBundle>, Error> {
+        use bitcoin::blockdata::{opcodes, script};
+        // Weight of a bundle with 0 outputs.
+        const BUNDLE_0_WEIGHT: usize = 504;
+        // Weight of a single output.
+        const OUTPUT_WEIGHT: usize = 128;
+        // Turns out to be 3121.
+        const MAX_BUNDLE_OUTPUTS: usize =
+            (bitcoin::policy::MAX_STANDARD_TX_WEIGHT as usize - BUNDLE_0_WEIGHT) / OUTPUT_WEIGHT;
+
+        // Aggregate all outputs by destination.
+        // destination -> (value, mainchain fee, spent_utxos)
+        let mut address_to_aggregated_withdrawal =
+            HashMap::<bitcoin::Address, AggregatedWithdrawal>::new();
+        for item in self.utxos.iter(txn)? {
+            let (outpoint, output) = item?;
+            if let Content::Withdrawal {
+                value,
+                ref main_address,
+                main_fee,
+            } = output.content
+            {
+                let aggregated = address_to_aggregated_withdrawal
+                    .entry(main_address.clone())
+                    .or_insert(AggregatedWithdrawal {
+                        spent_utxos: HashMap::new(),
+                        main_address: main_address.clone(),
+                        value: 0,
+                        main_fee: 0,
+                    });
+                // Add up all values.
+                aggregated.value += value;
+                // Set maximum mainchain fee.
+                if main_fee > aggregated.main_fee {
+                    aggregated.main_fee = main_fee;
+                }
+                aggregated.spent_utxos.insert(outpoint, output);
+            }
+        }
+        if address_to_aggregated_withdrawal.is_empty() {
+            return Ok(None);
+        }
+        let mut aggregated_withdrawals: Vec<_> =
+            address_to_aggregated_withdrawal.into_values().collect();
+        aggregated_withdrawals.sort_by_key(|a| std::cmp::Reverse(a.clone()));
+        let mut fee = 0;
+        let mut spent_utxos = HashMap::<OutPoint, Output>::new();
+        let mut bundle_outputs = vec![];
+        for aggregated in &aggregated_withdrawals {
+            if bundle_outputs.len() > MAX_BUNDLE_OUTPUTS {
+                break;
+            }
+            let bundle_output = bitcoin::TxOut {
+                value: aggregated.value,
+                script_pubkey: aggregated.main_address.script_pubkey(),
+            };
+            spent_utxos.extend(aggregated.spent_utxos.clone());
+            bundle_outputs.push(bundle_output);
+            fee += aggregated.main_fee;
+        }
+        let txin = bitcoin::TxIn {
+            script_sig: script::Builder::new()
+                // OP_FALSE == OP_0
+                .push_opcode(opcodes::OP_FALSE)
+                .into_script(),
+            ..bitcoin::TxIn::default()
+        };
+        // Create return dest output.
+        // The destination string for the change of a WT^
+        const SIDECHAIN_WTPRIME_RETURN_DEST: &[u8] = b"D";
+        let script = script::Builder::new()
+            .push_opcode(opcodes::all::OP_RETURN)
+            .push_slice(SIDECHAIN_WTPRIME_RETURN_DEST)
+            .into_script();
+        let return_dest_txout = bitcoin::TxOut {
+            value: 0,
+            script_pubkey: script,
+        };
+        // Create mainchain fee output.
+        let script = script::Builder::new()
+            .push_opcode(opcodes::all::OP_RETURN)
+            .push_slice(fee.to_le_bytes().as_ref())
+            .into_script();
+        let mainchain_fee_txout = bitcoin::TxOut {
+            value: 0,
+            script_pubkey: script,
+        };
+        // Create inputs commitment.
+        let inputs: Vec<OutPoint> = spent_utxos.keys().copied().collect();
+        let commitment = hash(&inputs);
+        let script = script::Builder::new()
+            .push_opcode(opcodes::all::OP_RETURN)
+            .push_slice(&commitment)
+            .into_script();
+        let inputs_commitment_txout = bitcoin::TxOut {
+            value: 0,
+            script_pubkey: script,
+        };
+        let transaction = bitcoin::Transaction {
+            version: 2,
+            lock_time: bitcoin::PackedLockTime(0),
+            input: vec![txin],
+            output: [
+                vec![
+                    return_dest_txout,
+                    mainchain_fee_txout,
+                    inputs_commitment_txout,
+                ],
+                bundle_outputs,
+            ]
+            .concat(),
+        };
+        if transaction.weight() > bitcoin::policy::MAX_STANDARD_TX_WEIGHT as usize {
+            Err(BitNamesError::BundleTooHeavy {
+                weight: transaction.weight(),
+                max_weight: bitcoin::policy::MAX_STANDARD_TX_WEIGHT as usize,
+            })?;
+        }
+        Ok(Some(WithdrawalBundle {
+            spent_utxos,
+            transaction,
+        }))
     }
 
     pub fn get_best_header(&self, rtxn: &RoTxn) -> Result<(u32, Header), Error> {
@@ -285,37 +419,49 @@ impl BitNamesState {
         self.headers
             .append(wtxn, &(block_height + 1), &header.clone())?;
 
+        // Handle deposits.
         if let Some(deposit_block_hash) = two_way_peg_data.deposit_block_hash {
             self.last_deposit_block.put(wtxn, &0, &deposit_block_hash)?;
         }
-        // Connect deposits.
         for (outpoint, deposit) in &two_way_peg_data.deposits {
             self.utxos.put(wtxn, outpoint, deposit)?;
         }
-        // Move pending withdrawals out of the utxo set.
-        for (bundle, outpoints) in &two_way_peg_data.pending_bundles {
-            self.withdrawal_bundles.put(wtxn, bundle, outpoints)?;
-            for outpoint in outpoints {
-                let output = self.utxos.get(wtxn, outpoint)?.unwrap();
-                self.pending_withdrawals.put(wtxn, outpoint, &output)?;
-                self.utxos.delete(wtxn, outpoint)?;
+
+        // Handle withdrawals.
+        let last_withdrawal_bundle_failure_height = self
+            .last_withdrawal_bundle_failure_height
+            .get(wtxn, &0)?
+            .unwrap_or(0);
+        if (block_height + 1) - last_withdrawal_bundle_failure_height
+            > Self::WITHDRAWAL_BUNDLE_FAILURE_GAP
+        {
+            if let Some(bundle) = self.collect_withdrawal_bundle(wtxn)? {
+                for outpoint in bundle.spent_utxos.keys() {
+                    self.utxos.delete(wtxn, outpoint)?;
+                }
+                self.last_withdrawal_bundle.put(wtxn, &0, &bundle)?;
             }
         }
-        // Remove spent withdrawals from the pending withdrawals set.
-        for bundle in &two_way_peg_data.failed_bundles {
-            let spent_withdrawals = self.withdrawal_bundles.get(wtxn, bundle)?.unwrap();
-            for outpoint in &spent_withdrawals {
-                self.pending_withdrawals.delete(wtxn, outpoint)?;
-            }
-            self.withdrawal_bundles.delete(wtxn, bundle)?;
-        }
-        // Move failed withdrawals back into the utxo set.
-        for bundle in &two_way_peg_data.failed_bundles {
-            let failed_withdrawals = self.withdrawal_bundles.get(wtxn, bundle)?.unwrap();
-            for outpoint in &failed_withdrawals {
-                let output = self.pending_withdrawals.get(wtxn, outpoint)?.unwrap();
-                self.utxos.put(wtxn, outpoint, &output)?;
-                self.pending_withdrawals.delete(wtxn, outpoint)?;
+        for (txid, status) in &two_way_peg_data.bundle_statuses {
+            if let Some(bundle) = self.last_withdrawal_bundle.get(wtxn, &0)? {
+                if bundle.transaction.txid() != *txid {
+                    continue;
+                }
+                match status {
+                    WithdrawalBundleStatus::Failed => {
+                        self.last_withdrawal_bundle_failure_height.put(
+                            wtxn,
+                            &0,
+                            &(block_height + 1),
+                        )?;
+                        for (outpoint, output) in &bundle.spent_utxos {
+                            self.utxos.put(wtxn, outpoint, output)?;
+                        }
+                    }
+                    WithdrawalBundleStatus::Confirmed => {
+                        self.last_withdrawal_bundle.delete(wtxn, &0)?;
+                    }
+                }
             }
         }
 
@@ -363,7 +509,7 @@ impl BitNamesState {
                     }
                     _ => {}
                 }
-                // Update utxo
+                // Update utxos.
                 self.utxos.put(wtxn, &outpoint, &output)?;
             }
         }
@@ -442,4 +588,6 @@ pub enum BitNamesError {
     },
     #[error("invalid key {key}")]
     InvalidKey { key: Key },
+    #[error("bundle too heavy {weight} > {max_weight}")]
+    BundleTooHeavy { weight: usize, max_weight: usize },
 }
