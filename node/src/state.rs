@@ -45,34 +45,32 @@ impl BitNamesStateActor {
         })
     }
 
-    async fn handle_message(&self, message: BitNamesStateMessage) {
+    async fn handle_message(&self, message: BitNamesStateMessage) -> Result<()> {
         match message {
             BitNamesStateMessage::ConnectBlock {
                 header,
                 body,
                 two_way_peg_data,
             } => {
-                let mut wtxn = self.env.write_txn().unwrap();
+                let mut wtxn = self.env.write_txn()?;
                 self.state
-                    .validate_block(&wtxn, &header, &body, &two_way_peg_data)
-                    .unwrap();
+                    .validate_block(&wtxn, &header, &body, &two_way_peg_data)?;
                 self.state
-                    .connect_block(&mut wtxn, &header, &body, &two_way_peg_data)
-                    .unwrap();
-                wtxn.commit().unwrap();
+                    .connect_block(&mut wtxn, &header, &body, &two_way_peg_data)?;
+                wtxn.commit()?;
             }
             BitNamesStateMessage::ValidateTransaction {
                 transaction,
                 respond_to,
             } => {
-                let rtxn = self.env.read_txn().unwrap();
+                let rtxn = self.env.read_txn()?;
                 let result = self
                     .state
                     .validate_transaction(&rtxn, &transaction.transaction);
                 respond_to.send(result).unwrap();
             }
             BitNamesStateMessage::GetBestHeader { respond_to } => {
-                let rtxn = self.env.read_txn().unwrap();
+                let rtxn = self.env.read_txn()?;
                 let result = self.state.get_best_header(&rtxn);
                 respond_to.send(result).unwrap();
             }
@@ -80,22 +78,23 @@ impl BitNamesStateActor {
                 addresses,
                 respond_to,
             } => {
-                let rtxn = self.env.read_txn().unwrap();
+                let rtxn = self.env.read_txn()?;
                 let addresses: HashSet<_> = addresses.into_iter().collect();
                 let result = self.state.get_utxos_by_addresses(&rtxn, &addresses);
                 respond_to.send(result).unwrap();
             }
             BitNamesStateMessage::GetLastDepositBlockHash { respond_to } => {
-                let rtxn = self.env.read_txn().unwrap();
+                let rtxn = self.env.read_txn()?;
                 let result = self.state.get_last_deposit_block_hash(&rtxn);
                 respond_to.send(result).unwrap();
             }
             BitNamesStateMessage::GetPendingWithdrawalBundle { respond_to } => {
-                let rtxn = self.env.read_txn().unwrap();
+                let rtxn = self.env.read_txn()?;
                 let result = self.state.get_pending_withdrawal_bundle(&rtxn);
                 respond_to.send(result).unwrap();
             }
         }
+        Ok(())
     }
 }
 
@@ -111,10 +110,11 @@ pub async fn spawn_bitnames_state(env: heed::Env) -> Result<BitNamesStateHandle>
     Ok(BitNamesStateHandle { sender })
 }
 
-pub async fn run_bitnames_state_actor(mut actor: BitNamesStateActor) {
+pub async fn run_bitnames_state_actor(mut actor: BitNamesStateActor) -> Result<()> {
     while let Some(message) = actor.receiver.recv().await {
-        actor.handle_message(message).await;
+        actor.handle_message(message).await?;
     }
+    Ok(())
 }
 
 impl BitNamesStateHandle {

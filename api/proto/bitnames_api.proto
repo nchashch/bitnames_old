@@ -4,7 +4,6 @@ package bitnames_api;
 
 service BitNames {
     rpc SubmitTransaction (SubmitTransactionRequest) returns (SubmitTransactionResponse) {};
-    rpc SubmitBlock (SubmitBlockRequest) returns (SubmitBlockResponse) {};
     rpc AttemptBmm (AttemptBmmRequest) returns (AttemptBmmResponse) {};
     rpc ConfirmBmm (ConfirmBmmRequest) returns (ConfirmBmmResponse) {};
 
@@ -18,12 +17,6 @@ message SubmitTransactionResponse {
     bool valid = 1;
     uint64 fee = 2;
 }
-
-message SubmitBlockRequest {
-    bytes header = 1;
-    bytes body = 2;
-}
-message SubmitBlockResponse {}
 
 message AttemptBmmRequest {
     uint64 amount = 1;

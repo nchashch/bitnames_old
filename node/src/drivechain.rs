@@ -23,49 +23,46 @@ pub struct DrivechainHandle {
 }
 
 impl DrivechainHandle {
-    pub async fn attempt_bmm(&self, amount: u64, header: Header, body: Body) {
+    pub async fn attempt_bmm(&self, amount: u64, header: Header, body: Body) -> Result<()> {
         self.sender
             .send(DrivechainMessage::AttemptBmm {
                 amount,
                 header,
                 body,
             })
-            .await
-            .unwrap();
+            .await?;
+        Ok(())
     }
 
-    pub async fn confirm_bmm(&self) -> Option<(Header, Body)> {
+    pub async fn confirm_bmm(&self) -> Result<Option<(Header, Body)>> {
         let (respond_to, receiver) = oneshot::channel();
         self.sender
             .send(DrivechainMessage::ConfirmBmm { respond_to })
-            .await
-            .unwrap();
-        receiver.await.unwrap()
+            .await?;
+        Ok(receiver.await?)
     }
 
-    pub async fn verify_bmm(&self, header: Header) -> bool {
+    pub async fn verify_bmm(&self, header: Header) -> Result<bool> {
         let (respond_to, receiver) = oneshot::channel();
         self.sender
             .send(DrivechainMessage::VerifyBmm { header, respond_to })
-            .await
-            .unwrap();
-        receiver.await.unwrap()
+            .await?;
+        Ok(receiver.await?)
     }
 
-    pub async fn get_mainchain_tip(&self) -> bitcoin::BlockHash {
+    pub async fn get_mainchain_tip(&self) -> Result<bitcoin::BlockHash> {
         let (respond_to, receiver) = oneshot::channel();
         self.sender
             .send(DrivechainMessage::GetMainchainTip { respond_to })
-            .await
-            .unwrap();
-        receiver.await.unwrap()
+            .await?;
+        Ok(receiver.await?)
     }
 
     pub async fn get_two_way_peg_data(
         &self,
         end: bitcoin::BlockHash,
         start: Option<bitcoin::BlockHash>,
-    ) -> TwoWayPegData {
+    ) -> Result<TwoWayPegData> {
         let (respond_to, receiver) = oneshot::channel();
         self.sender
             .send(DrivechainMessage::GetTwoWayPegData {
@@ -73,9 +70,8 @@ impl DrivechainHandle {
                 start,
                 respond_to,
             })
-            .await
-            .unwrap();
-        receiver.await.unwrap()
+            .await?;
+        Ok(receiver.await?)
     }
 
     pub async fn broadcast_withdrawal_bundle(
@@ -123,22 +119,22 @@ pub async fn spawn_drivechain() -> Result<DrivechainHandle> {
     Ok(DrivechainHandle { sender })
 }
 
-async fn run_drivechain_actor(mut actor: DrivechainActor) {
+async fn run_drivechain_actor(mut actor: DrivechainActor) -> Result<()> {
     while let Some(message) = actor.receiver.recv().await {
-        actor.handle_message(message).await;
+        actor.handle_message(message).await?;
     }
+    Ok(())
 }
 
 impl DrivechainActor {
-    async fn handle_message(&mut self, message: DrivechainMessage) {
+    async fn handle_message(&mut self, message: DrivechainMessage) -> Result<()> {
         match message {
             DrivechainMessage::BroadcastWithdrawalBundle { transaction } => {
                 let rawtx = transaction.serialize();
                 let rawtx = hex::encode(&rawtx);
                 self.client
                     .receivewithdrawalbundle(THIS_SIDECHAIN, &rawtx)
-                    .await
-                    .unwrap();
+                    .await?;
             }
             DrivechainMessage::AttemptBmm {
                 amount,
@@ -157,10 +153,8 @@ impl DrivechainActor {
                         THIS_SIDECHAIN,
                         &str_hash_prev[str_hash_prev.len() - 8..],
                     )
-                    .await
-                    .unwrap();
-                let txid =
-                    bitcoin::Txid::from_str(value["txid"]["txid"].as_str().unwrap()).unwrap();
+                    .await?;
+                let txid = bitcoin::Txid::from_str(value["txid"]["txid"].as_str().unwrap())?;
                 assert_eq!(header.merkle_root, body.compute_merkle_root());
                 self.block = Some((header, body));
             }
@@ -178,7 +172,7 @@ impl DrivechainActor {
                 respond_to.send(is_valid).unwrap();
             }
             DrivechainMessage::GetMainchainTip { respond_to } => {
-                let tip = self.client.getbestblockhash().await.unwrap();
+                let tip = self.client.getbestblockhash().await?;
                 respond_to.send(tip).unwrap();
             }
             DrivechainMessage::GetTwoWayPegData {
@@ -186,9 +180,8 @@ impl DrivechainActor {
                 start,
                 respond_to,
             } => {
-                let (deposits, deposit_block_hash) =
-                    self.get_deposit_outputs(end, start).await.unwrap();
-                let bundle_statuses = self.get_withdrawal_bundle_statuses().await.unwrap();
+                let (deposits, deposit_block_hash) = self.get_deposit_outputs(end, start).await?;
+                let bundle_statuses = self.get_withdrawal_bundle_statuses().await?;
                 let two_way_peg_data = TwoWayPegData {
                     deposits,
                     deposit_block_hash,
@@ -197,6 +190,7 @@ impl DrivechainActor {
                 respond_to.send(two_way_peg_data).unwrap();
             }
         }
+        Ok(())
     }
     async fn verify_bmm(&self, header: &Header) -> Result<()> {
         let prev_main_block_hash = header.prev_main_block_hash;
