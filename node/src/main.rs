@@ -1,6 +1,5 @@
 mod amount;
-mod bmm;
-mod bmm_actor;
+mod drivechain;
 mod mainchain_client;
 mod mempool;
 mod state;
@@ -19,7 +18,7 @@ struct BitNamesNode {
     // libp2p -- event source
     state: state::BitNamesStateHandle,
     mempool: mempool::MemPoolHandle,
-    bmm: bmm_actor::BmmHandle,
+    drivechain: drivechain::DrivechainHandle,
     // bip300/bip301
     // libp2p -- event sink
 }
@@ -29,12 +28,12 @@ impl BitNamesNode {
         let env = new_env();
         let state = state::spawn_bitnames_state(env.clone()).await?;
         let mempool = mempool::spawn_mem_pool().await;
-        let bmm = bmm_actor::spawn_bmm().await?;
+        let drivechain = drivechain::spawn_drivechain().await?;
 
         Ok(BitNamesNode {
             state,
             mempool,
-            bmm,
+            drivechain,
         })
     }
 }
@@ -92,14 +91,14 @@ impl BitNames for BitNamesNode {
         let txids: Vec<_> = body.transactions.iter().map(Transaction::txid).collect();
         let start = self.state.get_last_deposit_block_hash().await.unwrap();
         let end = header.prev_main_block_hash;
-        let two_way_peg_data = self.bmm.get_two_way_peg_data(end, start).await;
-        self.bmm.verify_bmm(header.clone()).await;
+        let two_way_peg_data = self.drivechain.get_two_way_peg_data(end, start).await;
+        self.drivechain.verify_bmm(header.clone()).await;
         self.state
             .connect_block(header, body, two_way_peg_data)
             .await;
         self.mempool.remove_transactions(txids).await;
         if let Some(bundle) = self.state.get_pending_withdrawal_bundle().await.unwrap() {
-            self.bmm
+            self.drivechain
                 .broadcast_withdrawal_bundle(bundle.transaction)
                 .await
                 .unwrap();
@@ -117,13 +116,13 @@ impl BitNames for BitNamesNode {
         let body = Body::new(transactions, vec![]);
         let (_, prev_header) = self.state.get_best_header().await.unwrap();
         let prev_side_block_hash = prev_header.block_hash();
-        let prev_main_block_hash = self.bmm.get_mainchain_tip().await;
+        let prev_main_block_hash = self.drivechain.get_mainchain_tip().await;
         let header = Header {
             merkle_root: body.compute_merkle_root(),
             prev_side_block_hash,
             prev_main_block_hash,
         };
-        self.bmm.attempt_bmm(amount, header, body).await;
+        self.drivechain.attempt_bmm(amount, header, body).await;
         Ok(Response::new(AttemptBmmResponse {}))
     }
 
@@ -131,11 +130,11 @@ impl BitNames for BitNamesNode {
         &self,
         request: Request<ConfirmBmmRequest>,
     ) -> Result<Response<ConfirmBmmResponse>, Status> {
-        let connected = match self.bmm.confirm_bmm().await {
+        let connected = match self.drivechain.confirm_bmm().await {
             Some((header, body)) => {
                 let start = self.state.get_last_deposit_block_hash().await.unwrap();
                 let end = header.prev_main_block_hash;
-                let two_way_peg_data = self.bmm.get_two_way_peg_data(end, start).await;
+                let two_way_peg_data = self.drivechain.get_two_way_peg_data(end, start).await;
                 dbg!(&header, &two_way_peg_data, &body);
                 let txids = body
                     .transactions
@@ -146,7 +145,7 @@ impl BitNames for BitNamesNode {
                     .connect_block(header, body, two_way_peg_data)
                     .await;
                 if let Some(bundle) = self.state.get_pending_withdrawal_bundle().await.unwrap() {
-                    self.bmm
+                    self.drivechain
                         .broadcast_withdrawal_bundle(bundle.transaction)
                         .await
                         .unwrap();
