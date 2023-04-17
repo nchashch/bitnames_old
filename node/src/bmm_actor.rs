@@ -75,14 +75,20 @@ impl BmmHandle {
 
     pub async fn broadcast_withdrawal_bundle(
         &self,
-        transaction: &bitcoin::Transaction,
+        transaction: bitcoin::Transaction,
     ) -> Result<()> {
-        todo!();
+        self.sender
+            .send(BmmMessage::BroadcastWithdrawalBundle { transaction })
+            .await?;
+        Ok(())
     }
 }
 
 #[derive(Debug)]
 pub enum BmmMessage {
+    BroadcastWithdrawalBundle {
+        transaction: bitcoin::Transaction,
+    },
     GetTwoWayPegData {
         end: bitcoin::BlockHash,
         start: Option<bitcoin::BlockHash>,
@@ -121,6 +127,12 @@ async fn run_bmm_actor(mut actor: BmmActor) {
 impl BmmActor {
     async fn handle_message(&mut self, message: BmmMessage) {
         match message {
+            BmmMessage::BroadcastWithdrawalBundle { transaction } => {
+                self.bmm
+                    .broadcast_withdrawal_bundle(&transaction)
+                    .await
+                    .unwrap();
+            }
             BmmMessage::AttemptBmm {
                 amount,
                 header,

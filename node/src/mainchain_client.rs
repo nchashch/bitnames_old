@@ -11,15 +11,15 @@ pub struct WithdrawalStatus {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SpentWithdrawal {
-    nsidechain: usize,
-    hash: bitcoin::Txid,
-    hashblock: bitcoin::BlockHash,
+    pub nsidechain: usize,
+    pub hash: bitcoin::Txid,
+    pub hashblock: bitcoin::BlockHash,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct FailedWithdrawal {
-    nsidechain: usize,
-    hash: bitcoin::Txid,
+    pub nsidechain: usize,
+    pub hash: bitcoin::Txid,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -93,7 +93,7 @@ pub trait Main {
         amount: AmountBtc,
         height: u32,
         criticalhash: &bitcoin::BlockHash,
-        nsidechain: u32,
+        nsidechain: usize,
         prevbytes: &str,
     ) -> Result<serde_json::Value, jsonrpsee::core::Error>;
     #[method(name = "verifybmm")]
@@ -111,6 +111,14 @@ pub trait Main {
         end_blockhash: Option<bitcoin::BlockHash>,
         start_blockhash: Option<bitcoin::BlockHash>,
     ) -> Result<Vec<Deposit>, jsonrpsee::core::Error>;
+
+    #[method(name = "receivewithdrawalbundle")]
+    async fn receivewithdrawalbundle(
+        &self,
+        nsidechain: usize,
+        // Raw transaction hex.
+        rawtx: &str,
+    ) -> Result<(), jsonrpsee::core::Error>;
 }
 
 // Arguments:

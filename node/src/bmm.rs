@@ -1,11 +1,13 @@
 use crate::mainchain_client::MainClient;
 use anyhow::Result;
-use bitcoin::util::psbt::serialize::Deserialize;
+use bitcoin::util::psbt::serialize::{Deserialize, Serialize};
 use bitnames_state::{Address, Body, Content, Header, OutPoint, Output};
 use bitnames_types::{bitcoin, bitcoin::hashes::Hash as _, WithdrawalBundleStatus};
 use jsonrpsee::http_client::{HeaderMap, HttpClient, HttpClientBuilder};
 use std::collections::HashMap;
 use std::str::FromStr;
+
+const THIS_SIDECHAIN: usize = 0;
 
 #[derive(Clone)]
 pub struct Bmm {
@@ -22,7 +24,6 @@ impl Bmm {
         let client = HttpClientBuilder::default()
             .set_headers(headers.clone())
             .build("http://127.0.0.1:18443")?;
-
         Ok(Self {
             client,
             block: None,
@@ -33,10 +34,31 @@ impl Bmm {
         Ok(self.client.getbestblockhash().await?)
     }
 
+    pub async fn broadcast_withdrawal_bundle(
+        &mut self,
+        transaction: &bitcoin::Transaction,
+    ) -> Result<()> {
+        let rawtx = transaction.serialize();
+        let rawtx = hex::encode(&rawtx);
+        self.client
+            .receivewithdrawalbundle(THIS_SIDECHAIN, &rawtx)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_withdrawal_bundle_statuses(
         &mut self,
     ) -> Result<HashMap<bitcoin::Txid, WithdrawalBundleStatus>> {
-        todo!();
+        let mut statuses = HashMap::new();
+        for spent in &self.client.listspentwithdrawals().await? {
+            if spent.nsidechain == THIS_SIDECHAIN {
+                statuses.insert(spent.hash, WithdrawalBundleStatus::Confirmed);
+            }
+        }
+        for failed in &self.client.listfailedwithdrawals().await? {
+            statuses.insert(failed.hash, WithdrawalBundleStatus::Failed);
+        }
+        Ok(statuses)
     }
 
     pub async fn get_deposit_outputs(
@@ -46,7 +68,7 @@ impl Bmm {
     ) -> Result<(HashMap<OutPoint, Output>, Option<bitcoin::BlockHash>)> {
         let deposits = self
             .client
-            .listsidechaindepositsbyblock(0, Some(end), start)
+            .listsidechaindepositsbyblock(THIS_SIDECHAIN, Some(end), start)
             .await?;
         let mut last_block_hash = None;
         let mut last_total = 0;
@@ -91,7 +113,7 @@ impl Bmm {
             })?;
         let value = self
             .client
-            .verifybmm(&block_hash, &header.block_hash().into(), 0)
+            .verifybmm(&block_hash, &header.block_hash().into(), THIS_SIDECHAIN)
             .await?;
         Ok(())
     }
@@ -106,7 +128,6 @@ impl Bmm {
         let str_hash_prev = header.prev_main_block_hash.to_string();
         let critical_hash: [u8; 32] = header.block_hash().into();
         let critical_hash = bitcoin::BlockHash::from_inner(critical_hash);
-        const THIS_SIDECHAIN: u32 = 0;
         let value = self
             .client
             .createbmmcriticaldatatx(

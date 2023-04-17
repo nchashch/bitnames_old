@@ -100,7 +100,7 @@ impl BitNames for BitNamesNode {
         self.mempool.remove_transactions(txids).await;
         if let Some(bundle) = self.state.get_pending_withdrawal_bundle().await.unwrap() {
             self.bmm
-                .broadcast_withdrawal_bundle(&bundle.transaction)
+                .broadcast_withdrawal_bundle(bundle.transaction)
                 .await
                 .unwrap();
         }
@@ -147,7 +147,7 @@ impl BitNames for BitNamesNode {
                     .await;
                 if let Some(bundle) = self.state.get_pending_withdrawal_bundle().await.unwrap() {
                     self.bmm
-                        .broadcast_withdrawal_bundle(&bundle.transaction)
+                        .broadcast_withdrawal_bundle(bundle.transaction)
                         .await
                         .unwrap();
                 }
